@@ -1,0 +1,5 @@
+{
+  "name": "drivenear",
+  "private": true,
+  "engines": { "node": ">=18" }
+}

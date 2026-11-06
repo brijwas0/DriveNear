@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function self(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function admin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // User profile documents
+    match /users/{uid} {
+      allow read: if self(uid) || admin();
+      // Allow user to create their initial profile as renter or owner; prevent setting isAdmin: true
+      allow create: if self(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.role in ['renter', 'owner']
+        && (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false);
+      // Allow user to update their profile information (name, phone, photoURL, city, mode)
+      // Disallow non-admins from changing verificationStatus or isAdmin
+      allow update: if admin()
+        || (self(uid)
+            && request.resource.data.role in ['renter', 'owner']
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus', 'isAdmin']));
+      allow delete: if admin();
+    }
+
+    // Identity verification requests
+    match /verificationRequests/{uid} {
+      allow read: if self(uid) || admin();
+      allow create: if self(uid)
+        && request.resource.data.userId == uid
+        && request.resource.data.status == 'pending';
+      allow update: if admin()
+        || (self(uid)
+            && request.resource.data.userId == uid
+            && request.resource.data.status == resource.data.status
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['reviewerNote', 'reviewedAt', 'reviewedBy']));
+      allow delete: if admin();
+    }
+
+    // Car listings
+    match /cars/{id} {
+      allow read: if resource.data.status in ['approved', 'active', 'published']
+        || (signedIn() && resource.data.ownerId == request.auth.uid)
+        || admin();
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.verified == false;
+      allow update: if admin()
+        || (signedIn()
+            && resource.data.ownerId == request.auth.uid
+            && request.resource.data.ownerId == resource.data.ownerId
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'verified', 'verificationStatus']));
+      allow delete: if admin()
+        || (signedIn() && resource.data.ownerId == request.auth.uid);
+    }
+
+    // Bookings
+    match /bookings/{id} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.ownerId == get(/databases/$(database)/documents/cars/$(request.resource.data.carId)).data.ownerId
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.verificationStatus == 'approved';
+      allow read: if admin()
+        || (signedIn() && (resource.data.userId == request.auth.uid || resource.data.ownerId == request.auth.uid));
+      allow update: if admin()
+        || (signedIn()
+            && resource.data.ownerId == request.auth.uid
+            && request.resource.data.userId == resource.data.userId
+            && request.resource.data.ownerId == resource.data.ownerId);
+      allow delete: if admin();
+    }
+
+    // Site settings (announcements, UPI details)
+    match /siteSettings/{id} {
+      allow read: if true;
+      allow write: if admin();
+    }
+
+    // Deny all other collections by default
+    match /{doc=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
